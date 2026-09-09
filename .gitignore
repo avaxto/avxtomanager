@@ -54,3 +54,10 @@ compile_commands.json
 *creator.user*
 
 *_qmlcache.qrc
+
+notes
+build
+
+# VSCode workspace settings (machine-specific Qt/OpenSSL paths)
+.vscode
+
