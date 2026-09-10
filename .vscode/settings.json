@@ -1,0 +1,31 @@
+{
+    // Deliberately free of any machine- or OS-specific paths, so this file
+    // is safe to sync (or commit) between macOS, Linux and Windows checkouts.
+    //
+    // Point CMake at your Qt install by exporting CMAKE_PREFIX_PATH in your
+    // shell profile, e.g.:
+    //   export CMAKE_PREFIX_PATH="$HOME/Qt/6.11.2/gcc_64"   # Linux
+    //   export CMAKE_PREFIX_PATH="$HOME/Qt/6.11.2/macos"    # macOS
+    // That is the standard CMake variable — find_package() reads it from the
+    // environment on its own, with nothing needed here — and it is also what
+    // scripts/build.sh honours, so one export covers the editor and the CLI.
+    //
+    // If your Qt is older than the 6.11.2 the project asks for by default
+    // (only APIs available since 6.5 are used, so this is safe), also
+    // export:
+    //   export AVXTO_QT_MIN_VERSION="6.9.0"
+    //
+    // See notes/initiallog.txt and CMakeLists.txt for the full rationale.
+    "cmake.configureSettings": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+    },
+    "cmake.generator": "Ninja",
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.configureOnOpen": true,
+
+    // Let cpptools ask CMake Tools for include paths/defines per file
+    // instead of relying solely on the static fallback in
+    // c_cpp_properties.json.
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
+}

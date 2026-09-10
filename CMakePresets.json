@@ -1,0 +1,18 @@
+{
+    "version": 5,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 24,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "description": "Shared, machine-independent settings. Not directly usable — see the 'dev' preset that scripts/build.sh generates into CMakeUserPresets.json (gitignored) with the values for your machine (Qt location, generator, build type).",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        }
+    ]
+}
