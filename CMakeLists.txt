@@ -32,9 +32,33 @@ endif()
 # The project targets Qt 6.11.2. The minimum is exposed as a cache variable so
 # the tree can also be configured against an older Qt 6 for local smoke
 # testing; only APIs available since Qt 6.5 are used.
+#
+# Nothing here is machine- or OS-specific: CMAKE_PREFIX_PATH is read from the
+# environment by CMake's own find_package machinery with no help needed from
+# us, and AVXTO_QT_MIN_VERSION can likewise be set via the environment (handy
+# for VS Code's CMake Tools, which just runs `cmake` in the user's shell
+# environment) as well as via -D on the command line, which is what
+# scripts/build.sh does after auto-detecting a local Qt install. Export
+# CMAKE_PREFIX_PATH (and AVXTO_QT_MIN_VERSION, if needed) in your shell
+# profile and every one of those paths picks it up identically on macOS,
+# Linux and Windows.
 # ---------------------------------------------------------------------------
-set(AVXTO_QT_MIN_VERSION "6.11.2" CACHE STRING
+# The default used the first time this build tree is configured. An
+# explicit -DAVXTO_QT_MIN_VERSION=... (what scripts/build.sh passes) always
+# wins over this, per normal CMake cache semantics.
+set(_avxto_qt_min_version_default "6.11.2")
+if(DEFINED ENV{AVXTO_QT_MIN_VERSION} AND NOT "$ENV{AVXTO_QT_MIN_VERSION}" STREQUAL "")
+    set(_avxto_qt_min_version_default "$ENV{AVXTO_QT_MIN_VERSION}")
+endif()
+set(AVXTO_QT_MIN_VERSION "${_avxto_qt_min_version_default}" CACHE STRING
     "Minimum Qt 6 version required to configure the project")
+unset(_avxto_qt_min_version_default)
+if(NOT AVXTO_QT_MIN_VERSION)
+    # Guards against an explicitly empty override (e.g. an unset environment
+    # variable substituted to "" by a tool) silently disabling the version
+    # check instead of falling back to the project default.
+    set(AVXTO_QT_MIN_VERSION "6.11.2")
+endif()
 
 find_package(Qt6 ${AVXTO_QT_MIN_VERSION} REQUIRED COMPONENTS Core Gui Widgets Network)
 

@@ -33,18 +33,55 @@ the first and last word, and the session password.
 ## Building
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=/path/to/Qt/6.11.2/macos
-cmake --build build
+./scripts/build.sh
+./scripts/run.sh
 ```
+
+`build.sh` auto-detects Qt (via `qmake` on `PATH`, then by searching `~/Qt`
+for the newest 6.x kit) and writes what it finds into `CMakeUserPresets.json`
+— a gitignored `dev` preset, inheriting the tracked, machine-independent
+[CMakePresets.json](CMakePresets.json), that pins your Qt location, generator
+and build type. `run.sh` builds if needed and launches the result. Both
+accept `--clean` and `--debug`; run either with `--help` for the full list of
+flags and environment overrides.
+
+Run `build.sh` once (and again whenever your Qt install changes) and **VS
+Code's CMake Tools picks up the same `dev` preset automatically** — no
+environment variables to export, in a shell profile or anywhere else. A
+plain script can't make an `export` stick in your interactive shell anyway
+(it only affects its own subprocess); presets are the actual cross-tool
+mechanism for this, which is why [.vscode/settings.json](.vscode/settings.json)
+has no machine-specific paths of its own and is safe to share between
+platforms.
+
+To point at a specific Qt install instead of relying on auto-detection:
+
+```sh
+CMAKE_PREFIX_PATH="$HOME/Qt/6.11.2/gcc_64" ./scripts/build.sh   # Linux
+CMAKE_PREFIX_PATH="$HOME/Qt/6.11.2/macos"  ./scripts/build.sh   # macOS
+```
+
+If your Qt is older than the 6.11.2 the project asks for by default (only
+Qt 6.5+ API is used, so this is safe), also set `AVXTO_QT_MIN_VERSION`, e.g.
+`AVXTO_QT_MIN_VERSION=6.9.0 ./scripts/build.sh`.
 
 On macOS the build picks up a Homebrew or MacPorts OpenSSL 3 automatically;
 the system `openssl` is LibreSSL and will not do. Override with
-`-DOPENSSL_ROOT_DIR=...` if needed.
+`OPENSSL_ROOT_DIR` if needed; Linux's system OpenSSL 3 is normally found with
+no configuration at all.
 
-To configure against an older Qt 6 (only Qt 6.5+ API is used):
+Calling CMake directly still works, either via the generated preset:
 
 ```sh
-cmake -S . -B build -DAVXTO_QT_MIN_VERSION=6.9.0 -DCMAKE_PREFIX_PATH=...
+cmake --preset dev
+cmake --build --preset dev
+```
+
+or fully manually, bypassing presets entirely:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH=/path/to/Qt/6.11.2/macos
+cmake --build build
 ```
 
 ## Using it
