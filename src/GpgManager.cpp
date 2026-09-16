@@ -42,12 +42,68 @@ bool validityIsUsable(const QString &validity)
         && code != QLatin1Char('i');  // invalid
 }
 
+/*!
+ * Recognises the specific way pinentry-curses (or plain pinentry-tty) fails
+ * when it is asked to prompt for a passphrase but has no controlling
+ * terminal to draw into — exactly the situation gpg-agent is in when a GUI
+ * application like this one spawns gpg as a subprocess. QProcess gives the
+ * child pipes, not a real TTY, so a text-mode pinentry can never work here
+ * no matter how it is invoked; only a graphical one can. This is a one-time
+ * system configuration issue, not something this application can fix from
+ * inside its own sandbox, so the best it can do is name the actual cause and
+ * the two-line fix instead of leaving the user with a bare gpg exit code.
+ *
+ * "public key decryption failed: <errno text>" is gpg's own wrapper for any
+ * failure at the gpg-agent/pinentry round-trip stage, before a passphrase is
+ * even checked — the trailing OS error varies by platform, gpg version and
+ * exactly how the terminal is missing ("Screen or window too small" and "No
+ * such file or directory" have both been observed for this identical root
+ * cause), so this keys off that stable prefix rather than the errno text.
+ */
+QString pinentryTtyHint(const QString &stderrText)
+{
+    if (!stderrText.contains(QLatin1String("public key decryption failed"))
+        && !stderrText.contains(QLatin1String("Screen or window too small"))
+        && !stderrText.contains(QLatin1String("Inappropriate ioctl for device"))) {
+        return {};
+    }
+
+#if defined(Q_OS_MACOS)
+    return QStringLiteral(
+        "\n\nThis is gpg-agent trying to use a text-mode pinentry "
+        "(pinentry-curses), which needs a terminal window — something a "
+        "GUI application like this one cannot give it. Install a graphical "
+        "pinentry and point gpg-agent at it, then try again:\n\n"
+        "    brew install pinentry-mac\n"
+        "    echo \"pinentry-program $(brew --prefix)/bin/pinentry-mac\" >> ~/.gnupg/gpg-agent.conf\n"
+        "    gpgconf --kill gpg-agent");
+#else
+    return QStringLiteral(
+        "\n\nThis is gpg-agent trying to use a text-mode pinentry "
+        "(pinentry-curses), which needs a terminal window — something a "
+        "GUI application like this one cannot give it. Install a graphical "
+        "pinentry and point gpg-agent at it, then try again, e.g.:\n\n"
+        "    sudo apt install pinentry-gnome3   # or pinentry-qt / pinentry-gtk2\n"
+        "    echo \"pinentry-program /usr/bin/pinentry-gnome3\" >> ~/.gnupg/gpg-agent.conf\n"
+        "    gpgconf --kill gpg-agent");
+#endif
+}
+
 } // namespace
 
 QString GpgKey::displayName() const
 {
     QString name = userId.isEmpty() ? QStringLiteral("(no user id)") : userId;
     return QStringLiteral("%1  —  %2 %3").arg(name, algorithm, keyId);
+}
+
+QString GpgRecipient::displayText() const
+{
+    if (!ok)
+        return QStringLiteral("unknown (%1)").arg(error);
+    if (!userId.isEmpty())
+        return QStringLiteral("%1  —  %2").arg(userId, keyId);
+    return QStringLiteral("key %1 (not in local keyring)").arg(keyId);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +317,93 @@ QList<GpgKey> GpgManager::listKeys(bool secretOnly, QString *errorOut) const
     return keys;
 }
 
+GpgRecipient GpgManager::identifyRecipient(const QString &filePath) const
+{
+    GpgRecipient result;
+
+    if (!isAvailable()) {
+        result.error = QStringLiteral("gpg executable not found on this system.");
+        return result;
+    }
+
+    const QFileInfo info(filePath);
+    if (!info.exists() || !info.isFile()) {
+        result.error = QStringLiteral("%1 does not exist.").arg(info.fileName());
+        return result;
+    }
+    if (info.size() > kMaxWalletFileBytes) {
+        result.error = QStringLiteral("larger than 1 MiB; not a wallet file.");
+        return result;
+    }
+
+    // --list-only turns --decrypt into a dry run: gpg parses the packet
+    // headers and reports what it finds on --status-fd, but never asks for a
+    // passphrase and never touches (or needs) a secret key. The recipient's
+    // key ID is right there in the "public-key encrypted session key"
+    // packet, unencrypted — that is how gpg itself knows which secret key to
+    // try at real decrypt time.
+    QProcess process;
+    process.start(m_gpgExecutable,
+                  {QStringLiteral("--batch"),
+                   QStringLiteral("--no-tty"),
+                   QStringLiteral("--status-fd"), QStringLiteral("1"),
+                   QStringLiteral("--decrypt"),
+                   QStringLiteral("--list-only"),
+                   QDir::toNativeSeparators(info.absoluteFilePath())});
+    if (!process.waitForFinished(kListTimeoutMs)) {
+        process.kill();
+        result.error = QStringLiteral("gpg timed out.");
+        return result;
+    }
+
+    const QString status = QString::fromUtf8(process.readAllStandardOutput());
+    for (const QString &line : status.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        if (!line.startsWith(QLatin1String("[GNUPG:] ENC_TO ")))
+            continue;
+        const QStringList tokens = line.simplified().split(QLatin1Char(' '));
+        if (tokens.size() >= 3 && tokens.at(2).size() >= 8) {
+            result.keyId = tokens.at(2).toUpper();
+            break;
+        }
+    }
+
+    if (result.keyId.isEmpty()) {
+        result.error = QStringLiteral("not a GPG-encrypted file.");
+        return result;
+    }
+    result.ok = true;
+
+    // Resolve to a display name if the key happens to be in the local
+    // keyring. Not finding it is normal (e.g. a wallet copied in from
+    // another machine) and not an error — the key ID above is still shown.
+    QProcess lookup;
+    lookup.start(m_gpgExecutable,
+                {QStringLiteral("--batch"), QStringLiteral("--no-tty"),
+                 QStringLiteral("--with-colons"), QStringLiteral("--fixed-list-mode"),
+                 QStringLiteral("--list-keys"), result.keyId});
+    if (lookup.waitForFinished(kListTimeoutMs) && lookup.exitCode() == 0) {
+        const QString listing = QString::fromUtf8(lookup.readAllStandardOutput());
+        bool inPrimaryKey = false;
+        for (const QString &line : listing.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QStringList fields = line.split(QLatin1Char(':'));
+            const QString record = colonField(fields, 0);
+            if (record == QLatin1String("pub")) {
+                inPrimaryKey = true;
+            } else if (record == QLatin1String("fpr") && inPrimaryKey && result.fingerprint.isEmpty()) {
+                result.fingerprint = colonField(fields, 9);
+            } else if (record == QLatin1String("uid") && result.userId.isEmpty()) {
+                QString uid = colonField(fields, 9);
+                uid.replace(QLatin1String("\\x3a"), QLatin1String(":"));
+                result.userId = uid;
+            } else if (record == QLatin1String("sub") || record == QLatin1String("ssb")) {
+                inPrimaryKey = false;
+            }
+        }
+    }
+
+    return result;
+}
+
 bool GpgManager::encryptToFile(const SecureBytes &plaintext,
                                const QString &recipientFingerprint,
                                const QString &filePath,
@@ -397,10 +540,11 @@ GpgDecryptOperation *GpgManager::decryptFile(const QString &filePath,
             } else if (status != QProcess::NormalExit) {
                 result.error = QStringLiteral("gpg terminated abnormally.");
             } else if (exitCode != 0) {
-                result.error = QStringLiteral("gpg could not decrypt this file (exit %1).\n\n%2")
+                result.error = QStringLiteral("gpg could not decrypt this file (exit %1).\n\n%2%3")
                                    .arg(exitCode)
                                    .arg(stderrText.isEmpty() ? QStringLiteral("no diagnostics")
-                                                             : stderrText);
+                                                             : stderrText,
+                                        pinentryTtyHint(stderrText));
             } else if (output.isEmpty()) {
                 result.error = QStringLiteral("gpg returned an empty plaintext.");
             } else {

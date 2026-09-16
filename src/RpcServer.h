@@ -38,6 +38,14 @@ class SessionRegistry;
  * This is plaintext HTTP on the loopback interface. Any process running as
  * this user can connect to it; the password is what keeps it honest, not the
  * transport. See notes/initiallog.txt for the threat model.
+ *
+ * CORS is wide open by design (Access-Control-Allow-Origin reflects the
+ * caller's Origin, or "*" for a non-browser client) and OPTIONS preflights
+ * are answered without touching the session registry or the auth-failure
+ * throttle. That is consistent with the threat model above: the origin a
+ * request came from was never part of the credential, the session password
+ * is, so a web page that already holds a valid one is meant to be able to
+ * read the response regardless of what site it was served from.
  */
 class RpcServer : public QObject
 {
@@ -69,16 +77,24 @@ private:
         qint64 headerEnd = 0;
         QByteArray method;
         QByteArray target;
+        QByteArray origin;  //!< the request's Origin header, for CORS; empty if none sent
     };
 
     void onNewConnection();
     void onReadyRead(QTcpSocket *socket);
     void handleRequest(QTcpSocket *socket, Connection &connection);
 
+    /*!
+     * \a origin is echoed back as Access-Control-Allow-Origin (falling back
+     * to "*" if empty, i.e. a non-browser caller sent no Origin header at
+     * all) on every response, preflight included — see handleRequest()'s
+     * CORS comment for why this is safe.
+     */
     void sendResponse(QTcpSocket *socket,
                       int statusCode,
                       const QByteArray &reasonPhrase,
-                      QByteArray body) const;
+                      QByteArray body,
+                      const QByteArray &origin) const;
 
     //! True when the caller has tripped the failed-authentication throttle.
     [[nodiscard]] bool isThrottled();

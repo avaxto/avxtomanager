@@ -58,6 +58,28 @@ struct GpgKey
 };
 
 /*!
+ * \brief Who a wallet file is encrypted to, read from its OpenPGP packet
+ *        headers without decrypting anything.
+ *
+ * A GPG-encrypted file's "public-key encrypted session key" packet names its
+ * recipient's key ID in the clear — that is what makes gpg able to pick the
+ * right secret key at decrypt time without trying every key in the keyring.
+ * Reading it back is a metadata-only operation: no secret key, passphrase or
+ * pinentry prompt is involved.
+ */
+struct GpgRecipient
+{
+    bool ok = false;       //!< false if the file isn't readable OpenPGP data
+    QString keyId;         //!< 16 hex characters from the packet header
+    QString fingerprint;   //!< 40 hex characters; empty if the key isn't in the local keyring
+    QString userId;        //!< primary uid; empty if the key isn't in the local keyring
+    QString error;         //!< set when ok is false
+
+    //! One line for display, covering the "key not in this keyring" case too.
+    [[nodiscard]] QString displayText() const;
+};
+
+/*!
  * \brief Drives the local gpg(1) binary for wallet file encryption/decryption.
  *
  * Everything runs through QProcess against the user's real GnuPG home, so
@@ -97,6 +119,16 @@ public:
      * keys with no encryption-capable subkey.
      */
     [[nodiscard]] QList<GpgKey> listKeys(bool secretOnly, QString *errorOut = nullptr) const;
+
+    /*!
+     * Identifies the key \a filePath is encrypted to, without decrypting it.
+     * Synchronous: this is a packet-header read, not a cryptographic
+     * operation, so gpg never prompts and returns quickly.
+     *
+     * If a file has more than one recipient only the first is reported; this
+     * application only ever encrypts a wallet to one.
+     */
+    [[nodiscard]] GpgRecipient identifyRecipient(const QString &filePath) const;
 
     /*!
      * Encrypts \a plaintext to \a recipientFingerprint and writes \a filePath.

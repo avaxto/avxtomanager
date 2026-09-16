@@ -155,7 +155,10 @@ void RpcServer::onReadyRead(QTcpSocket *socket)
         const qint64 separator = connection.buffer.indexOf("\r\n\r\n");
         if (separator < 0) {
             if (connection.buffer.size() > kMaxHeaderBytes) {
-                sendResponse(socket, 431, "Request Header Fields Too Large", {});
+                // Headers aren't fully received, so Origin isn't known yet;
+                // "*" is a harmless fallback since a legitimate CORS
+                // preflight is nowhere near this size limit.
+                sendResponse(socket, 431, "Request Header Fields Too Large", {}, {});
                 socket->disconnectFromHost();
             }
             return; // keep waiting for the rest of the headers
@@ -164,14 +167,14 @@ void RpcServer::onReadyRead(QTcpSocket *socket)
         const QByteArray head = connection.buffer.left(separator);
         const QList<QByteArray> lines = head.split('\n');
         if (lines.isEmpty()) {
-            sendResponse(socket, 400, "Bad Request", {});
+            sendResponse(socket, 400, "Bad Request", {}, {});
             socket->disconnectFromHost();
             return;
         }
 
         const QList<QByteArray> requestLine = lines.first().trimmed().simplified().split(' ');
         if (requestLine.size() < 2) {
-            sendResponse(socket, 400, "Bad Request", {});
+            sendResponse(socket, 400, "Bad Request", {}, {});
             socket->disconnectFromHost();
             return;
         }
@@ -189,11 +192,13 @@ void RpcServer::onReadyRead(QTcpSocket *socket)
                 connection.contentLength = line.mid(colon + 1).trimmed().toLongLong(&ok);
                 if (!ok || connection.contentLength < 0)
                     connection.contentLength = 0;
+            } else if (name == "origin") {
+                connection.origin = line.mid(colon + 1).trimmed();
             }
         }
 
         if (connection.contentLength > kMaxBodyBytes) {
-            sendResponse(socket, 413, "Payload Too Large", {});
+            sendResponse(socket, 413, "Payload Too Large", {}, connection.origin);
             socket->disconnectFromHost();
             return;
         }
@@ -217,6 +222,8 @@ void RpcServer::handleRequest(QTcpSocket *socket, Connection &connection)
                                .arg(QDateTime::currentDateTime().toString(Qt::ISODate), peer, what));
     };
 
+    const QByteArray origin = connection.origin;
+
     QByteArray body = connection.buffer.mid(connection.headerEnd, connection.contentLength);
     // The connection is single-shot; scrub the accumulated bytes now.
     wipe(connection.buffer);
@@ -225,11 +232,23 @@ void RpcServer::handleRequest(QTcpSocket *socket, Connection &connection)
     auto finish = [&](int status, const QByteArray &reason, QJsonObject envelope) {
         QByteArray encoded = encodeJson(envelope);
         envelope = QJsonObject{};
-        sendResponse(socket, status, reason, encoded);
+        sendResponse(socket, status, reason, encoded, origin);
         wipe(encoded);
         wipe(body);
         socket->disconnectFromHost();
     };
+
+    if (connection.method == "OPTIONS") {
+        // CORS preflight. The browser is only checking whether it is allowed
+        // to send the real request; it carries no JSON-RPC payload, so this
+        // must not touch the JSON parser, the session registry or the
+        // failed-auth throttle — sendResponse() already puts the
+        // Access-Control-Allow-* headers on every reply, preflight included.
+        wipe(body);
+        sendResponse(socket, 204, "No Content", {}, origin);
+        socket->disconnectFromHost();
+        return;
+    }
 
     if (connection.method != "POST") {
         log(QStringLiteral("%1 -> 405").arg(QString::fromLatin1(connection.method)));
@@ -351,7 +370,8 @@ void RpcServer::handleRequest(QTcpSocket *socket, Connection &connection)
 void RpcServer::sendResponse(QTcpSocket *socket,
                              int statusCode,
                              const QByteArray &reasonPhrase,
-                             QByteArray body) const
+                             QByteArray body,
+                             const QByteArray &origin) const
 {
     if (!socket || socket->state() != QAbstractSocket::ConnectedState) {
         wipe(body);
@@ -359,7 +379,7 @@ void RpcServer::sendResponse(QTcpSocket *socket,
     }
 
     QByteArray response;
-    response.reserve(body.size() + 256);
+    response.reserve(body.size() + 384);
     response.append("HTTP/1.1 ");
     response.append(QByteArray::number(statusCode));
     response.append(' ');
@@ -373,6 +393,19 @@ void RpcServer::sendResponse(QTcpSocket *socket,
     response.append("Connection: close\r\n");
     // The response can carry a mnemonic; keep it out of any intermediary.
     response.append("X-Content-Type-Options: nosniff\r\n");
+    // CORS: the session password is this endpoint's real credential, not
+    // the caller's origin — a page that already holds a valid password is
+    // meant to be able to read the response back, whatever site it was
+    // served from. Reflecting the request's own Origin (falling back to
+    // "*" for a non-browser caller, e.g. curl, that sends none) works for
+    // any frontend without hardcoding one, and must be present on every
+    // response, the OPTIONS preflight included, or the browser refuses to
+    // hand the page the result even when the request itself succeeded.
+    response.append("Access-Control-Allow-Origin: ");
+    response.append(origin.isEmpty() ? QByteArray("*") : origin);
+    response.append("\r\n");
+    response.append("Access-Control-Allow-Methods: POST, OPTIONS\r\n");
+    response.append("Access-Control-Allow-Headers: Content-Type\r\n");
     response.append("\r\n");
     response.append(body);
 

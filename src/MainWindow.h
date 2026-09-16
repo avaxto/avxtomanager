@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <QHash>
 #include <QMainWindow>
 #include <QString>
 
@@ -60,10 +61,12 @@ private:
     void updateDetails();
     void updateActions();
     void copySessionPassword();
+    void copyRpcEndpoint();
     void copyRpcExample();
 
     [[nodiscard]] QString selectedFilePath() const;
     [[nodiscard]] QString selectedFileName() const;
+    [[nodiscard]] const GpgRecipient &recipientFor(const QString &filePath);
 
     void appendLog(const QString &line);
     void showError(const QString &title, const QString &message);
@@ -75,11 +78,17 @@ private:
     GpgDecryptOperation *m_activeDecrypt = nullptr;
 
     QString m_workingDirectory;
+    //! Who each .bin is encrypted to, keyed by absolute path. Reading this
+    //! from the file is a synchronous gpg call; cached so re-selecting a
+    //! wallet in the list doesn't repeat it, and cleared on every
+    //! refreshWalletList() in case a file was replaced.
+    QHash<QString, GpgRecipient> m_recipientCache;
 
     QLineEdit *m_directoryEdit = nullptr;
     QListWidget *m_walletList = nullptr;
 
     QLabel *m_fileNameValue = nullptr;
+    QLabel *m_encryptedToValue = nullptr;
     QLabel *m_statusValue = nullptr;
     QLabel *m_firstWordValue = nullptr;
     QLabel *m_lastWordValue = nullptr;

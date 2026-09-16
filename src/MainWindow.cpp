@@ -172,6 +172,10 @@ void MainWindow::buildUi()
     m_fileNameValue->setFont(monospaceFont());
     walletForm->addRow(tr("File:"), m_fileNameValue);
 
+    m_encryptedToValue = makeValueLabel();
+    m_encryptedToValue->setWordWrap(true);
+    walletForm->addRow(tr("Encrypted to:"), m_encryptedToValue);
+
     m_statusValue = makeValueLabel();
     walletForm->addRow(tr("Status:"), m_statusValue);
 
@@ -236,6 +240,10 @@ void MainWindow::buildUi()
     m_endpointLabel->setFont(monospaceFont());
     m_endpointLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     endpointRow->addWidget(m_endpointLabel, 1);
+
+    auto *copyEndpoint = new QPushButton(tr("Copy"), rpcGroup);
+    connect(copyEndpoint, &QPushButton::clicked, this, &MainWindow::copyRpcEndpoint);
+    endpointRow->addWidget(copyEndpoint);
 
     auto *copyCurl = new QPushButton(tr("Copy curl example"), rpcGroup);
     connect(copyCurl, &QPushButton::clicked, this, &MainWindow::copyRpcExample);
@@ -380,6 +388,10 @@ void MainWindow::setWorkingDirectory(const QString &path, bool persist)
 void MainWindow::refreshWalletList()
 {
     const QString previous = selectedFileName();
+
+    // Cheap to recompute and guards against a stale entry if a .bin was
+    // replaced (re-created under the same name) since the last refresh.
+    m_recipientCache.clear();
 
     m_walletList->clear();
     if (m_workingDirectory.isEmpty()) {
@@ -603,9 +615,13 @@ void MainWindow::updateDetails()
 
     if (filePath.isEmpty()) {
         m_fileNameValue->setText(placeholder());
+        m_encryptedToValue->setText(placeholder());
         m_statusValue->setText(tr("no wallet selected"));
     } else {
         m_fileNameValue->setText(selectedFileName());
+        // Reading the recipient is a packet-header lookup, not a decrypt —
+        // it works on a still-locked wallet just as well as an open one.
+        m_encryptedToValue->setText(recipientFor(filePath).displayText());
         m_statusValue->setText(session ? tr("unlocked in this session")
                                        : tr("locked — double-click to decrypt"));
     }
@@ -664,6 +680,17 @@ void MainWindow::copySessionPassword()
     statusBar()->showMessage(tr("Session password copied to the clipboard."), 5000);
 }
 
+void MainWindow::copyRpcEndpoint()
+{
+    if (!m_rpc->isListening()) {
+        statusBar()->showMessage(tr("The RPC endpoint is not listening."), 4000);
+        return;
+    }
+
+    QGuiApplication::clipboard()->setText(m_rpc->endpoint());
+    statusBar()->showMessage(tr("Endpoint URL copied to the clipboard."), 5000);
+}
+
 void MainWindow::copyRpcExample()
 {
     if (!m_rpc->isListening()) {
@@ -703,6 +730,14 @@ QString MainWindow::selectedFileName() const
 {
     const QListWidgetItem *item = m_walletList->currentItem();
     return item && item->isSelected() ? item->data(Qt::UserRole + 1).toString() : QString();
+}
+
+const GpgRecipient &MainWindow::recipientFor(const QString &filePath)
+{
+    auto it = m_recipientCache.find(filePath);
+    if (it == m_recipientCache.end())
+        it = m_recipientCache.insert(filePath, m_gpg.identifyRecipient(filePath));
+    return it.value();
 }
 
 void MainWindow::appendLog(const QString &line)
