@@ -15,8 +15,10 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QSet>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QUrl>
 
 namespace {
 
@@ -39,6 +41,39 @@ constexpr int kErrorDenied = -32001;
 QByteArray encodeJson(const QJsonObject &object)
 {
     return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+
+/*!
+ * Decides what to send back as Access-Control-Allow-Origin for a request
+ * whose Origin header was \a origin.
+ *
+ * - No Origin header at all (empty \a origin) means no browser CORS check is
+ *   happening in the first place — a curl-style caller, or our own
+ *   scripts/rpc-demo.sh — so "*" is harmless.
+ * - The production wallet frontend, and any localhost/127.0.0.1 dev server
+ *   regardless of port or scheme, are reflected back exactly.
+ * - Anything else gets an empty QByteArray, which sendResponse() takes to
+ *   mean "omit the header": the request still runs (CORS is a browser-side
+ *   read restriction, not a server-side access control), but the browser
+ *   refuses to hand the response back to the page's script.
+ */
+QByteArray allowedCorsOrigin(const QByteArray &origin)
+{
+    if (origin.isEmpty())
+        return "*";
+
+    static const QSet<QByteArray> exactAllowed = {
+        "https://wallet.avax.to",
+    };
+    if (exactAllowed.contains(origin))
+        return origin;
+
+    const QUrl url(QString::fromLatin1(origin));
+    const QString host = url.host().toLower();
+    if (url.isValid() && (host == QLatin1String("localhost") || host == QLatin1String("127.0.0.1")))
+        return origin;
+
+    return {};
 }
 
 QJsonObject errorEnvelope(const QJsonValue &id, int code, const QString &message)
@@ -198,7 +233,7 @@ void RpcServer::onReadyRead(QTcpSocket *socket)
         }
 
         if (connection.contentLength > kMaxBodyBytes) {
-            sendResponse(socket, 413, "Payload Too Large", {}, connection.origin);
+            sendResponse(socket, 413, "Payload Too Large", {}, allowedCorsOrigin(connection.origin));
             socket->disconnectFromHost();
             return;
         }
@@ -222,7 +257,7 @@ void RpcServer::handleRequest(QTcpSocket *socket, Connection &connection)
                                .arg(QDateTime::currentDateTime().toString(Qt::ISODate), peer, what));
     };
 
-    const QByteArray origin = connection.origin;
+    const QByteArray corsOrigin = allowedCorsOrigin(connection.origin);
 
     QByteArray body = connection.buffer.mid(connection.headerEnd, connection.contentLength);
     // The connection is single-shot; scrub the accumulated bytes now.
@@ -232,7 +267,7 @@ void RpcServer::handleRequest(QTcpSocket *socket, Connection &connection)
     auto finish = [&](int status, const QByteArray &reason, QJsonObject envelope) {
         QByteArray encoded = encodeJson(envelope);
         envelope = QJsonObject{};
-        sendResponse(socket, status, reason, encoded, origin);
+        sendResponse(socket, status, reason, encoded, corsOrigin);
         wipe(encoded);
         wipe(body);
         socket->disconnectFromHost();
@@ -244,8 +279,11 @@ void RpcServer::handleRequest(QTcpSocket *socket, Connection &connection)
         // must not touch the JSON parser, the session registry or the
         // failed-auth throttle — sendResponse() already puts the
         // Access-Control-Allow-* headers on every reply, preflight included.
+        // An origin outside the allowlist gets a preflight with no
+        // Access-Control-Allow-Origin at all, which is how the browser is
+        // told "no" — it never sends the real request that follows.
         wipe(body);
-        sendResponse(socket, 204, "No Content", {}, origin);
+        sendResponse(socket, 204, "No Content", {}, corsOrigin);
         socket->disconnectFromHost();
         return;
     }
@@ -371,7 +409,7 @@ void RpcServer::sendResponse(QTcpSocket *socket,
                              int statusCode,
                              const QByteArray &reasonPhrase,
                              QByteArray body,
-                             const QByteArray &origin) const
+                             const QByteArray &corsOrigin) const
 {
     if (!socket || socket->state() != QAbstractSocket::ConnectedState) {
         wipe(body);
@@ -393,17 +431,22 @@ void RpcServer::sendResponse(QTcpSocket *socket,
     response.append("Connection: close\r\n");
     // The response can carry a mnemonic; keep it out of any intermediary.
     response.append("X-Content-Type-Options: nosniff\r\n");
-    // CORS: the session password is this endpoint's real credential, not
-    // the caller's origin — a page that already holds a valid password is
-    // meant to be able to read the response back, whatever site it was
-    // served from. Reflecting the request's own Origin (falling back to
-    // "*" for a non-browser caller, e.g. curl, that sends none) works for
-    // any frontend without hardcoding one, and must be present on every
-    // response, the OPTIONS preflight included, or the browser refuses to
-    // hand the page the result even when the request itself succeeded.
-    response.append("Access-Control-Allow-Origin: ");
-    response.append(origin.isEmpty() ? QByteArray("*") : origin);
-    response.append("\r\n");
+    // CORS, restricted to allowedCorsOrigin()'s allowlist. \a corsOrigin
+    // arrives already decided: non-empty means "the caller's Origin is
+    // allowed, echo it back"; empty means "not on the allowlist, omit the
+    // header" — the request still ran either way (CORS is a browser-side
+    // read restriction, not a server-side access control), but the browser
+    // then refuses to hand the calling page the response.
+    if (!corsOrigin.isEmpty()) {
+        response.append("Access-Control-Allow-Origin: ");
+        response.append(corsOrigin);
+        response.append("\r\n");
+        // Only meaningful when the header's value actually depends on the
+        // request's Origin — not for the "*" wildcard used when no Origin
+        // was sent at all.
+        if (corsOrigin != "*")
+            response.append("Vary: Origin\r\n");
+    }
     response.append("Access-Control-Allow-Methods: POST, OPTIONS\r\n");
     response.append("Access-Control-Allow-Headers: Content-Type\r\n");
     response.append("\r\n");

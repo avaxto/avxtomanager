@@ -39,13 +39,17 @@ class SessionRegistry;
  * this user can connect to it; the password is what keeps it honest, not the
  * transport. See notes/initiallog.txt for the threat model.
  *
- * CORS is wide open by design (Access-Control-Allow-Origin reflects the
- * caller's Origin, or "*" for a non-browser client) and OPTIONS preflights
- * are answered without touching the session registry or the auth-failure
- * throttle. That is consistent with the threat model above: the origin a
- * request came from was never part of the credential, the session password
- * is, so a web page that already holds a valid one is meant to be able to
- * read the response regardless of what site it was served from.
+ * CORS is allowed for an explicit set of origins — the production wallet
+ * frontend at https://wallet.avax.to, and any localhost/127.0.0.1 dev server
+ * regardless of port, for local development — plus "*" for a non-browser
+ * caller that sends no Origin header at all. Anything else gets a response
+ * with no Access-Control-Allow-Origin, so the browser refuses to expose it
+ * to the page's script even though the request still ran (CORS is a
+ * browser-side read restriction, not a server-side access control: the
+ * session password stays the real credential regardless of origin). OPTIONS
+ * preflights are answered the same way, without touching the session
+ * registry or the auth-failure throttle. See allowedCorsOrigin() in
+ * RpcServer.cpp for the allowlist itself.
  */
 class RpcServer : public QObject
 {
@@ -77,7 +81,7 @@ private:
         qint64 headerEnd = 0;
         QByteArray method;
         QByteArray target;
-        QByteArray origin;  //!< the request's Origin header, for CORS; empty if none sent
+        QByteArray origin;  //!< the request's raw Origin header; empty if none sent
     };
 
     void onNewConnection();
@@ -85,16 +89,16 @@ private:
     void handleRequest(QTcpSocket *socket, Connection &connection);
 
     /*!
-     * \a origin is echoed back as Access-Control-Allow-Origin (falling back
-     * to "*" if empty, i.e. a non-browser caller sent no Origin header at
-     * all) on every response, preflight included — see handleRequest()'s
-     * CORS comment for why this is safe.
+     * \a corsOrigin is the value to send as Access-Control-Allow-Origin —
+     * already decided by allowedCorsOrigin() in RpcServer.cpp, not the raw
+     * Origin header — or an empty QByteArray to omit the header entirely.
+     * Sent on every response, the OPTIONS preflight included.
      */
     void sendResponse(QTcpSocket *socket,
                       int statusCode,
                       const QByteArray &reasonPhrase,
                       QByteArray body,
-                      const QByteArray &origin) const;
+                      const QByteArray &corsOrigin) const;
 
     //! True when the caller has tripped the failed-authentication throttle.
     [[nodiscard]] bool isThrottled();
