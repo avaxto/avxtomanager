@@ -39,17 +39,11 @@ class SessionRegistry;
  * this user can connect to it; the password is what keeps it honest, not the
  * transport. See notes/initiallog.txt for the threat model.
  *
- * CORS is allowed for an explicit set of origins — the production wallet
- * frontend at https://wallet.avax.to, and any localhost/127.0.0.1 dev server
- * regardless of port, for local development — plus "*" for a non-browser
- * caller that sends no Origin header at all. Anything else gets a response
- * with no Access-Control-Allow-Origin, so the browser refuses to expose it
- * to the page's script even though the request still ran (CORS is a
- * browser-side read restriction, not a server-side access control: the
- * session password stays the real credential regardless of origin). OPTIONS
- * preflights are answered the same way, without touching the session
- * registry or the auth-failure throttle. See allowedCorsOrigin() in
- * RpcServer.cpp for the allowlist itself.
+ * CORS is open to every origin: the request's Origin is reflected back, or
+ * "*" for a non-browser caller that sends none. The session password is the
+ * real credential, not the caller's origin. OPTIONS preflights are answered
+ * without touching the session registry or the auth-failure throttle. See
+ * allowedCorsOrigin() in RpcServer.cpp.
  */
 class RpcServer : public QObject
 {
@@ -90,8 +84,8 @@ private:
 
     /*!
      * \a corsOrigin is the value to send as Access-Control-Allow-Origin —
-     * already decided by allowedCorsOrigin() in RpcServer.cpp, not the raw
-     * Origin header — or an empty QByteArray to omit the header entirely.
+     * as decided by allowedCorsOrigin() in RpcServer.cpp — or an empty
+     * QByteArray to omit the header entirely.
      * Sent on every response, the OPTIONS preflight included.
      */
     void sendResponse(QTcpSocket *socket,

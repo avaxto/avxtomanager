@@ -15,10 +15,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QSet>
 #include <QTcpSocket>
 #include <QTimer>
-#include <QUrl>
 
 namespace {
 
@@ -47,33 +45,15 @@ QByteArray encodeJson(const QJsonObject &object)
  * Decides what to send back as Access-Control-Allow-Origin for a request
  * whose Origin header was \a origin.
  *
- * - No Origin header at all (empty \a origin) means no browser CORS check is
- *   happening in the first place — a curl-style caller, or our own
- *   scripts/rpc-demo.sh — so "*" is harmless.
- * - The production wallet frontend, and any localhost/127.0.0.1 dev server
- *   regardless of port or scheme, are reflected back exactly.
- * - Anything else gets an empty QByteArray, which sendResponse() takes to
- *   mean "omit the header": the request still runs (CORS is a browser-side
- *   read restriction, not a server-side access control), but the browser
- *   refuses to hand the response back to the page's script.
+ * Every origin is allowed: the session password is this endpoint's real
+ * credential, not the caller's origin, so any page that holds a valid
+ * password may read the response back. The request's own Origin is
+ * reflected exactly; a caller that sends no Origin at all (curl, or our own
+ * scripts/rpc-demo.sh) gets "*".
  */
 QByteArray allowedCorsOrigin(const QByteArray &origin)
 {
-    if (origin.isEmpty())
-        return "*";
-
-    static const QSet<QByteArray> exactAllowed = {
-        "https://wallet.avax.to",
-    };
-    if (exactAllowed.contains(origin))
-        return origin;
-
-    const QUrl url(QString::fromLatin1(origin));
-    const QString host = url.host().toLower();
-    if (url.isValid() && (host == QLatin1String("localhost") || host == QLatin1String("127.0.0.1")))
-        return origin;
-
-    return {};
+    return origin.isEmpty() ? QByteArray("*") : origin;
 }
 
 QJsonObject errorEnvelope(const QJsonValue &id, int code, const QString &message)
@@ -279,9 +259,6 @@ void RpcServer::handleRequest(QTcpSocket *socket, Connection &connection)
         // must not touch the JSON parser, the session registry or the
         // failed-auth throttle — sendResponse() already puts the
         // Access-Control-Allow-* headers on every reply, preflight included.
-        // An origin outside the allowlist gets a preflight with no
-        // Access-Control-Allow-Origin at all, which is how the browser is
-        // told "no" — it never sends the real request that follows.
         wipe(body);
         sendResponse(socket, 204, "No Content", {}, corsOrigin);
         socket->disconnectFromHost();
@@ -431,12 +408,9 @@ void RpcServer::sendResponse(QTcpSocket *socket,
     response.append("Connection: close\r\n");
     // The response can carry a mnemonic; keep it out of any intermediary.
     response.append("X-Content-Type-Options: nosniff\r\n");
-    // CORS, restricted to allowedCorsOrigin()'s allowlist. \a corsOrigin
-    // arrives already decided: non-empty means "the caller's Origin is
-    // allowed, echo it back"; empty means "not on the allowlist, omit the
-    // header" — the request still ran either way (CORS is a browser-side
-    // read restriction, not a server-side access control), but the browser
-    // then refuses to hand the calling page the response.
+    // CORS, open to every origin (see allowedCorsOrigin()). It must be on
+    // every response, the OPTIONS preflight included, or the browser refuses
+    // to hand the page the result even when the request itself succeeded.
     if (!corsOrigin.isEmpty()) {
         response.append("Access-Control-Allow-Origin: ");
         response.append(corsOrigin);
@@ -449,6 +423,9 @@ void RpcServer::sendResponse(QTcpSocket *socket,
     }
     response.append("Access-Control-Allow-Methods: POST, OPTIONS\r\n");
     response.append("Access-Control-Allow-Headers: Content-Type\r\n");
+    // Private Network Access: lets a page on a public site (e.g.
+    // https://wallet.avax.to) reach this loopback endpoint.
+    response.append("Access-Control-Allow-Private-Network: true\r\n");
     response.append("\r\n");
     response.append(body);
 
