@@ -7,7 +7,6 @@
 #include "MainWindow.h"
 
 #include "Bip39.h"
-#include "NewWalletDialog.h"
 #include "RpcServer.h"
 #include "SecureBytes.h"
 #include "SessionCrypto.h"
@@ -142,6 +141,11 @@ void MainWindow::buildUi()
     m_newButton = new QPushButton(tr("New Wallet…"), listPanel);
     connect(m_newButton, &QPushButton::clicked, this, &MainWindow::createWallet);
     listButtons->addWidget(m_newButton);
+
+    m_importButton = new QPushButton(tr("Import…"), listPanel);
+    m_importButton->setToolTip(tr("Save an existing mnemonic as a GPG-encrypted wallet"));
+    connect(m_importButton, &QPushButton::clicked, this, &MainWindow::importWallet);
+    listButtons->addWidget(m_importButton);
 
     m_openButton = new QPushButton(tr("Open"), listPanel);
     connect(m_openButton, &QPushButton::clicked, this, &MainWindow::openSelectedWallet);
@@ -280,6 +284,10 @@ void MainWindow::buildMenus()
     m_newAction = fileMenu->addAction(tr("&New Wallet…"));
     m_newAction->setShortcut(QKeySequence::New);
     connect(m_newAction, &QAction::triggered, this, &MainWindow::createWallet);
+
+    m_importAction = fileMenu->addAction(tr("&Import Mnemonic…"));
+    m_importAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
+    connect(m_importAction, &QAction::triggered, this, &MainWindow::importWallet);
 
     fileMenu->addSeparator();
     auto *quitAction = fileMenu->addAction(tr("&Quit"));
@@ -431,9 +439,22 @@ void MainWindow::refreshWalletList()
 
 void MainWindow::createWallet()
 {
+    addWallet(NewWalletDialog::Mode::Generate);
+}
+
+void MainWindow::importWallet()
+{
+    addWallet(NewWalletDialog::Mode::Import);
+}
+
+void MainWindow::addWallet(NewWalletDialog::Mode mode)
+{
+    const bool importing = mode == NewWalletDialog::Mode::Import;
+
     if (m_workingDirectory.isEmpty()) {
         showError(tr("No working directory"),
-                  tr("Choose a working directory before creating a wallet."));
+                  importing ? tr("Choose a working directory before importing a mnemonic.")
+                            : tr("Choose a working directory before creating a wallet."));
         return;
     }
     if (!m_gpg.isAvailable()) {
@@ -442,7 +463,7 @@ void MainWindow::createWallet()
         return;
     }
 
-    NewWalletDialog dialog(&m_gpg, m_workingDirectory, this);
+    NewWalletDialog dialog(&m_gpg, m_workingDirectory, mode, this);
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -451,16 +472,24 @@ void MainWindow::createWallet()
     const QString filePath = QDir(m_workingDirectory).filePath(name + QStringLiteral(".bin"));
 
     try {
-        SecureBytes mnemonic = Bip39::generateMnemonic();
+        SecureBytes mnemonic = importing ? dialog.mnemonic() : Bip39::generateMnemonic();
         const SecureBytes payload = WalletFile::serialise(mnemonic);
+        mnemonic.reset();
+
+        // The dialog's copy is no longer needed once it is in the payload.
+        if (importing)
+            dialog.clearMnemonic();
 
         QString error;
         if (!m_gpg.encryptToFile(payload, recipient, filePath, &error)) {
-            showError(tr("Could not create wallet"), error);
+            showError(importing ? tr("Could not import mnemonic") : tr("Could not create wallet"),
+                      error);
             return;
         }
 
-        appendLog(tr("Created %1.bin encrypted to %2").arg(name, recipient.right(16)));
+        appendLog((importing ? tr("Imported mnemonic as %1.bin, encrypted to %2")
+                             : tr("Created %1.bin encrypted to %2"))
+                      .arg(name, recipient.right(16)));
 
         // Open the new wallet straight away so the user gets a session
         // password without a round trip through gpg and pinentry.
@@ -475,7 +504,7 @@ void MainWindow::createWallet()
 
         QMessageBox::information(
             this,
-            tr("Wallet created"),
+            importing ? tr("Mnemonic imported") : tr("Wallet created"),
             tr("<p><b>%1.bin</b> was written to the working directory and encrypted to "
                "GPG key <code>%2</code>.</p>"
                "<p>It is open in this session; its session password is shown in the "
@@ -487,7 +516,8 @@ void MainWindow::createWallet()
     } catch (const SessionCrypto::CryptoError &error) {
         showError(tr("Cryptographic failure"), error.message());
     } catch (const std::exception &error) {
-        showError(tr("Could not create wallet"), QString::fromUtf8(error.what()));
+        showError(importing ? tr("Could not import mnemonic") : tr("Could not create wallet"),
+                  QString::fromUtf8(error.what()));
     }
 }
 
@@ -658,6 +688,8 @@ void MainWindow::updateActions()
 
     m_newButton->setEnabled(haveDirectory && gpgReady && !busy);
     m_newAction->setEnabled(haveDirectory && gpgReady && !busy);
+    m_importButton->setEnabled(haveDirectory && gpgReady && !busy);
+    m_importAction->setEnabled(haveDirectory && gpgReady && !busy);
 
     m_openButton->setEnabled(haveSelection && gpgReady && !busy);
     m_openAction->setEnabled(haveSelection && gpgReady && !busy);

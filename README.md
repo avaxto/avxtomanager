@@ -92,9 +92,15 @@ cmake --build build
    encrypted to a key you cannot decrypt is unrecoverable. A fresh 24-word
    mnemonic is generated from OpenSSL's CSPRNG and written as `<name>.bin`
    with mode `0600`.
-3. **Double-click a wallet** to decrypt it. Your own `gpg-agent` handles the
+3. **Import…** (File → Import Mnemonic…, `Ctrl+Shift+I`) — save a mnemonic
+   you already have. Same name and GPG key choice as above, plus a masked
+   entry field for the 12–24 words. The words are never echoed: typos are
+   reported by word position, and a mnemonic with a bad BIP-39 checksum is
+   refused unless you explicitly tick the override. The result is an ordinary
+   `<name>.bin`, indistinguishable from a generated one.
+4. **Double-click a wallet** to decrypt it. Your own `gpg-agent` handles the
    passphrase prompt — this application never sees it.
-4. The **session password** appears once the wallet is open. Closing the wallet
+5. The **session password** appears once the wallet is open. Closing the wallet
    revokes it immediately.
 
 ## JSON-RPC endpoint

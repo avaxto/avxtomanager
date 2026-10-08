@@ -11,6 +11,7 @@
 #include <QString>
 
 #include "GpgManager.h"
+#include "NewWalletDialog.h"
 #include "SessionRegistry.h"
 
 class QAction;
@@ -54,6 +55,8 @@ private:
     void refreshWalletList();
 
     void createWallet();
+    void importWallet();
+    void addWallet(NewWalletDialog::Mode mode);
     void openSelectedWallet();
     void closeSelectedWallet();
     void closeAllWallets();
@@ -101,11 +104,13 @@ private:
     QPushButton *m_openButton = nullptr;
     QPushButton *m_closeButton = nullptr;
     QPushButton *m_newButton = nullptr;
+    QPushButton *m_importButton = nullptr;
 
     QLabel *m_endpointLabel = nullptr;
     QPlainTextEdit *m_logView = nullptr;
 
     QAction *m_newAction = nullptr;
+    QAction *m_importAction = nullptr;
     QAction *m_openAction = nullptr;
     QAction *m_closeAction = nullptr;
     QAction *m_closeAllAction = nullptr;
